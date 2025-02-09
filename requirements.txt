@@ -1,0 +1,11 @@
+altair
+beautifulsoup4
+matplotlib
+numpy
+openai
+pandas
+python-dotenv
+requests
+semantic_router
+streamlit
+mediacloud-metadata
