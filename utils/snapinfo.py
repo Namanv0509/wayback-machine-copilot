@@ -1,32 +1,28 @@
+import logging
 import requests
 
-def get_snapshot_data(url, timestamp, job_id):
+logger = logging.getLogger(__name__)
+
+WAYBACK_BASE_URL = "https://web.archive.org/web"
+
+
+def get_snapshot_data(url: str, timestamp: str, job_id: str = "") -> str:
     """
-    Retrieves the HTML, CSS, and other data for a specific snapshot of a web page from the Wayback Machine.
+    Retrieves the raw HTML/data for a specific Wayback Machine snapshot.
 
-    Args:
-        url (str): The URL of the web page.
-        timestamp (str): The timestamp of the snapshot in the format "YYYYMMDDhhmmss".
-        job_id (str): The job ID associated with the snapshot (optional).
-
-    Returns:
-        str: The HTML, CSS, and other data for the specified snapshot.
+    :param url: Webpage URL.
+    :param timestamp: Snapshot timestamp formatted as YYYYMMDDhhmmss.
+    :param job_id: Optional job ID identifier.
+    :return: Snapshot content string or error message.
     """
-    base_url = "https://web.archive.org/web"
-    snapshot_url = f"{base_url}/{timestamp}id_{job_id}/{url}"
+    job_part = f"id_{job_id}" if job_id else "id_"
+    snapshot_url = f"{WAYBACK_BASE_URL}/{timestamp}{job_part}/{url}"
 
-    response = requests.get(snapshot_url)
-
-    if response.status_code == 200:
-        return response.text
-    else:
+    try:
+        response = requests.get(snapshot_url, timeout=30)
+        if response.status_code == 200:
+            return response.text
         return f"Error: {response.status_code} - {response.reason}"
-
-if __name__ == "__main__":
-    # Example usage
-    url = "http://example.org/"
-    timestamp = "20240104000803"
-    job_id = ""  # Leave empty if no job ID is available
-
-    snapshot_data = get_snapshot_data(url, timestamp, job_id)
-    print(snapshot_data)
+    except requests.exceptions.RequestException as exc:
+        logger.error(f"Error retrieving snapshot for {url}: {exc}")
+        return f"Error: {exc}"

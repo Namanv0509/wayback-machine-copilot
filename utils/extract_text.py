@@ -1,62 +1,44 @@
-import requests
 import logging
-from mcmetadata import extract
 from typing import Optional
+from mcmetadata import extract
+import requests
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logger = logging.getLogger(__name__)
 
 
-def fetch_and_extract_text(url: str) -> Optional[str]:
+def fetch_and_extract_text(url: str, timeout: int = 20) -> Optional[str]:
     """
-    Fetches a webpage and extracts its main textual content.
+    Fetches a webpage and extracts its main textual content and title.
 
-    This function retrieves the HTML content of a given URL, then uses the
-    trafilatura library to extract relevant metadata and the main text content.
-    It focuses on extracting the title and the visible text content, discarding
-    boilerplate elements like navigation, headers, footers, etc.
-
-    :param url: The URL of the webpage to fetch and extract text from.
-                This should be a full URL including the protocol.
-    :type url: str
-    :return: A string containing the extracted text content, or None
-             if an error occurs during fetching or processing.
-    :rtype: Optional[str]
+    :param url: The target webpage URL.
+    :param timeout: Request timeout in seconds.
+    :return: Extracted text and title string or None on failure.
     """
     try:
-        logging.info(f"Fetching content from {url}")
-        response = requests.get(url)
+        logger.info(f"Fetching webpage content from {url}")
+        response = requests.get(
+            url,
+            timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0 (Athena Wayback Assistant)"},
+        )
         response.raise_for_status()
 
         encoding = response.encoding if response.encoding else "utf-8"
-        html_content = response.content.decode(encoding)
-        logging.info(f"Extracting metadata from {url}")
+        html_content = response.content.decode(encoding, errors="replace")
+
+        logger.info(f"Extracting metadata from {url}")
         metadata = extract(url=url, html_text=html_content)
 
-        # Extract relevant metadata
-        title = metadata.get("normalized_article_title", "")
-        visible_text = metadata.get("text_content", "")
+        title = metadata.get("normalized_article_title", "") or ""
+        visible_text = metadata.get("text_content", "") or ""
 
-        # Concatenate all parts with newline separators
-        text_content = "\n".join([title, visible_text])
-        logging.info(f"Successfully extracted text content from {url}")
-        return text_content.strip()
-    except requests.RequestException as e:
-        logging.error(f"Error fetching {url}: {e}")
+        text_content = "\n".join(part for part in [title, visible_text] if part)
+        logger.info(f"Extracted {len(text_content)} characters from {url}")
+        return text_content.strip() if text_content.strip() else None
+
+    except requests.RequestException as exc:
+        logger.error(f"Network error fetching {url}: {exc}")
         return None
-    except Exception as e:
-        logging.error(f"Error processing HTML content from {url}: {e}")
+    except Exception as exc:
+        logger.error(f"Error processing HTML from {url}: {exc}")
         return None
-
-
-# Example usage
-if __name__ == "__main__":
-    url = "https://edition.cnn.com/"
-    text_content = fetch_and_extract_text(url)
-    if text_content:
-        print("Extracted text content:")
-        print(text_content)
-    else:
-        print("No text content extracted.")
