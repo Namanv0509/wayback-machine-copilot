@@ -1,15 +1,14 @@
+import logging
+import os
+from typing import Optional
 from dotenv import load_dotenv
 from semantic_router import Route, RouteLayer
 from semantic_router.encoders import OpenAIEncoder
 from config import router_schemas
-import os
 
 load_dotenv()
-os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+logger = logging.getLogger(__name__)
 
-schemas = router_schemas
-
-# Add the new route for trend analysis
 routes = [
     Route(
         name="fetch_cdx_data",
@@ -22,7 +21,7 @@ routes = [
             "Get Archive data",
             "Get Archive records",
         ],
-        function_schemas=schemas,
+        function_schemas=router_schemas,
     ),
     Route(
         name="get_trend_analysis",
@@ -49,7 +48,7 @@ routes = [
             "How much has this website changed?",
             "How much has this URL been modified?",
         ],
-        function_schemas=schemas,
+        function_schemas=router_schemas,
     ),
     Route(
         name="fetch_data_wayback",
@@ -64,18 +63,27 @@ routes = [
             "What did the webpage look like in the past?",
             "What was shown on the webpage in the past?",
         ],
-        function_schemas=schemas,
+        function_schemas=router_schemas,
     ),
 ]
 
 
 class SemanticRouterService:
+    """
+    Routes user prompt intents to appropriate backend functions using semantic embeddings.
+    """
+
     def __init__(self):
         encoder = OpenAIEncoder()
         self.layer = RouteLayer(encoder=encoder, routes=routes)
 
-    def get_intent(self, user_input):
-        result = self.layer(user_input)
-
-        # If the confidence about a route is zero, return None
-        return result.name if result.name else None
+    def get_intent(self, user_input: str) -> Optional[str]:
+        """
+        Evaluates input query and returns matching route name if confidence threshold met.
+        """
+        try:
+            result = self.layer(user_input)
+            return result.name if result and result.name else None
+        except Exception as exc:
+            logger.warning(f"Semantic routing error for '{user_input}': {exc}")
+            return None

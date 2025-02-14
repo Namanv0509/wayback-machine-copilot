@@ -1,19 +1,28 @@
 import json
+import logging
 import os
+from typing import Any, Dict, List
+from dotenv import load_dotenv
 from openai import OpenAI
 from config.function_schemas import function_schemas
-from dotenv import load_dotenv
+
+load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 class OpenAIService:
-    def __init__(self, api_key):
+    """
+    Service wrapper for OpenAI chat completions and function calling.
+    """
+
+    def __init__(self, api_key: str):
         self.client = OpenAI(api_key=api_key)
-        load_dotenv()
-        self.system_prompt = os.getenv("SYSTEM_PROMPT")
+        self.system_prompt = os.getenv("SYSTEM_PROMPT", "You are Athena, a helpful AI assistant for the Wayback Machine.")
 
-    def get_completion(self, messages):
-
-        # Prepend the system message to the conversation
+    def get_completion(self, messages: List[Dict[str, Any]]):
+        """
+        Sends conversation messages with functions to OpenAI.
+        """
         full_messages = [{"role": "system", "content": self.system_prompt}] + messages
 
         response = self.client.chat.completions.create(
@@ -25,5 +34,12 @@ class OpenAIService:
         )
         return response.choices[0].message
 
-    def get_function_args(self, function_call):
-        return json.loads(function_call.arguments)
+    def get_function_args(self, function_call: Any) -> Dict[str, Any]:
+        """
+        Parses JSON arguments from an OpenAI function call object.
+        """
+        if hasattr(function_call, "arguments"):
+            return json.loads(function_call.arguments)
+        if isinstance(function_call, dict) and "arguments" in function_call:
+            return json.loads(function_call["arguments"])
+        return {}
