@@ -1,78 +1,69 @@
-from typing import Dict
-from venv import logger
-
-# from matplotlib import pyplot as plt
-import requests
-
-import altair as alt
-import numpy as np
-import pandas as pd
-import streamlit as st
-import streamlit.components.v1 as components
-
 from copy import deepcopy
-from dataclasses import dataclass, field, asdict
+import logging
 from math import exp
-from urllib.parse import quote_plus
-from utils.loadcdx import load_cdx, DailyRecord, PeriodicSamples
+from typing import Any, Callable, Dict, Tuple
+import pandas as pd
+import requests
+import streamlit as st
+from utils.loadcdx import DailyRecord, PeriodicSamples, load_cdx
 
-MAXCDXPAGES = 2000
-WBM = "https://web.archive.org/web"
+logger = logging.getLogger(__name__)
+
+WAYBACK_BASE_URL = "https://web.archive.org/web"
 CRLF = "\n"
-CDXAPI = "https://web.archive.org/cdx/search/cdx"
 
 
-def ymd(d):
-    y, d = divmod(d, 365)
-    m, d = divmod(d, 30)
-    if y or m > 6:
-        if d > 15:
-            m += 1
-        d = 0
-    if m == 12:
-        y += 1
-        m = 0
-    t = {"y": y, "m": m, "d": d}
-    return "".join([s for k, v in t.items() if v for s in (str(v), k)])
+def format_ymd_span(days: int) -> str:
+    """Formats a span of days into years, months, days string representation."""
+    years, rem_days = divmod(days, 365)
+    months, rem_days = divmod(rem_days, 30)
+    if years or months > 6:
+        if rem_days > 15:
+            months += 1
+        rem_days = 0
+    if months == 12:
+        years += 1
+        months = 0
+    components = {"y": years, "m": months, "d": rem_days}
+    return "".join(f"{v}{k}" for k, v in components.items() if v)
 
 
-@st.cache(max_entries=65536, show_spinner=False)
-def _sigmoid_inverse(x, shift, slope):
-    return 1 + exp(shift - x / slope)
+def sigmoid_inverse(x: float, shift: float, slope: float) -> float:
+    return 1.0 + exp(shift - x / slope)
 
 
-def sigmoid(x, shift=5, slope=1, spread=1):
-    return spread / _sigmoid_inverse(x, shift, slope)
+def sigmoid(x: float, shift: float = 5, slope: float = 1, spread: float = 1) -> float:
+    return spread / sigmoid_inverse(x, shift, slope)
 
 
-def fill_identical(f, lk, lv, rk, rv, gap):
+def fill_identical(records: Dict[str, DailyRecord], lk, lv, rk, rv, gap):
     if lv != rv:
         return
     for day in pd.date_range(lk, rk, inclusive="neither"):
-        t = day.strftime("%Y-%m-%d")
-        f[t] = DailyRecord(t, specimen=lv)
+        day_str = day.strftime("%Y-%m-%d")
+        records[day_str] = DailyRecord(day_str, specimen=lv)
 
 
-def fill_closest(f, lk, lv, rk, rv, gap):
+def fill_closest(records: Dict[str, DailyRecord], lk, lv, rk, rv, gap):
     mid = gap / 2
     for i, day in enumerate(pd.date_range(lk, rk, inclusive="neither")):
-        t = day.strftime("%Y-%m-%d")
-        f[t] = DailyRecord(t, specimen=lv) if i < mid else DailyRecord(t, specimen=rv)
+        day_str = day.strftime("%Y-%m-%d")
+        records[day_str] = DailyRecord(day_str, specimen=lv) if i < mid else DailyRecord(day_str, specimen=rv)
 
 
-def fill_forward(f, lk, lv, rk, rv, gap):
+def fill_forward(records: Dict[str, DailyRecord], lk, lv, rk, rv, gap):
     for day in pd.date_range(lk, rk, inclusive="neither"):
-        t = day.strftime("%Y-%m-%d")
-        f[t] = DailyRecord(t, specimen=lv)
+        day_str = day.strftime("%Y-%m-%d")
+        records[day_str] = DailyRecord(day_str, specimen=lv)
 
 
-def fill_backward(f, lk, lv, rk, rv, gap):
+def fill_backward(records: Dict[str, DailyRecord], lk, lv, rk, rv, gap):
     for day in pd.date_range(lk, rk, inclusive="neither"):
-        t = day.strftime("%Y-%m-%d")
-        f[t] = DailyRecord(t, specimen=rv)
+        day_str = day.strftime("%Y-%m-%d")
+        records[day_str] = DailyRecord(day_str, specimen=rv)
 
 
-fillpolicies = {
+FILL_POLICIES: Dict[str, Callable] = {
     "identical": fill_identical,
     "closest": fill_closest,
     "forward": fill_forward,
@@ -80,178 +71,106 @@ fillpolicies = {
 }
 
 
-def filler(drs, fill, policy):
-    f = {}
-    kv = iter(drs.items())
-    pk, pv = next(kv)
-    pv = pv.specimen
-    pk = pd.to_datetime(pk)
-    for k, v in kv:
-        v = v.specimen
-        k = pd.to_datetime(k)
-        gap = (k - pk).days - 1
-        if gap and (fill == -1 or gap <= fill):
-            fillpolicies[policy](f, pk, pv, k, v, gap)
-        pk, pv = k, v
-    return f
+def fill_gap_records(
+    date_records: Dict[str, DailyRecord], fill_limit: int, policy: str
+) -> Dict[str, DailyRecord]:
+    filled_records: Dict[str, DailyRecord] = {}
+    record_items = iter(date_records.items())
+    prev_key, prev_val = next(record_items)
+    prev_specimen = prev_val.specimen
+    prev_dt = pd.to_datetime(prev_key)
+
+    for curr_key, curr_val in record_items:
+        curr_specimen = curr_val.specimen
+        curr_dt = pd.to_datetime(curr_key)
+        gap = (curr_dt - prev_dt).days - 1
+        if gap and (fill_limit == -1 or gap <= fill_limit):
+            fill_func = FILL_POLICIES.get(policy, fill_identical)
+            fill_func(filled_records, prev_dt, prev_specimen, curr_dt, curr_specimen, gap)
+        prev_dt, prev_specimen = curr_dt, curr_specimen
+
+    return filled_records
 
 
-@st.cache(ttl=3600)
-def get_resp_headers(url):
-    res = requests.head(url, allow_redirects=True)
-    rh = res.history + [res]
-    return [
-        f"HTTP/1.1 {r.status_code} {r.reason}{CRLF}{CRLF.join(': '.join(i) for i in r.headers.items())}{CRLF}"
-        for r in rh
-    ]
+def load_trend_data(
+    url: str, fill: int, policy: str, sigparams: Dict[str, Tuple[float, float, float]]
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    date_records, psc = deepcopy(load_cdx(url))
+    if not date_records:
+        raise ValueError(f"Empty or malformed CDX API response for {url}")
 
-
-def load_cdx_pages(url):
-    ses = requests.Session()
-    prog = st.progress(0)
-    page = 0
-    while page < MAXCDXPAGES:
-        pageurl = f"{url}&page={page}"
-        r = ses.get(pageurl, stream=True)
-        if not r.ok:
-            prog.empty()
-            raise ValueError(
-                f"CDX API returned `{r.status_code}` status code for `{url}`"
-            )
-        r.raw.decode_content = True
-        for line in r.raw:
-            yield line
-        page += 1
-        maxp = int(r.headers.get("x-cdx-num-pages", 1))
-        prog.progress(min(page / maxp, 1.0))
-        if page >= maxp:
-            prog.empty()
-            break
-
-
-@st.cache(ttl=3600, persist=True, show_spinner=False, suppress_st_warning=True)
-def load_cdx(url):
-    digest_status = {}
-    date_record = {}
-    psc = PeriodicSamples()
-    STPR = {"2xx": 4, "4xx": 3, "5xx": 2, "3xx": 1}
-    SWS = 1000
-    sw = ["~"] * SWS
-    cp = -1
-    dr = None
-    pt = ""
-    pc = "~"
-    ps = "~"
-    rs = us = uw = 0
-    for l in load_cdx_pages(
-        f"{CDXAPI}?fl=timestamp,statuscode,digest&url={quote_plus(url)}"
-    ):
-        ts, s, d = l.decode().split()
-        psc(ts)
-        t = f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}"
-        s = f"{s[:1]}xx" if "200" <= s <= "599" else s
-        if s == "-":
-            s = digest_status.get(d, "~")
-        else:
-            digest_status[d] = s
-        d = d[:8]
-        if t != pt:
-            if pt:
-                pc = dr.digest
-                dr.chaos = us / rs
-                dr.chaosn = uw / min(SWS, rs)
-                date_record[pt] = dr
-            dr = DailyRecord(t)
-            cp = -1
-            pt = t
-        dr.incr(s)
-        pr = STPR.get(s, 0)
-        if pr > cp:
-            dr.specimen = s
-            dr.datetime = ts
-            dr.digest = d
-            dr.content = "Unchanged" if d == pc else "Changed"
-            cp = pr
-        wp = rs % SWS
-        rs += 1
-        if s != ps:
-            ps = s
-            us += 1
-            uw += 1
-        if sw[wp] != sw[wp - SWS + 1]:
-            uw -= 1
-        sw[wp] = s
-    if pt:
-        dr.chaos = us / rs
-        dr.chaosn = uw / min(SWS, rs)
-        date_record[pt] = dr
-    return (date_record, psc.sample)
-
-
-@st.cache(ttl=3600)
-def load_data(url, fill, policy, sigparams):
-    date_record, psc = deepcopy(load_cdx(url))
-    if not date_record:
-        raise ValueError(f"Empty or malformed CDX API response for `{url}`")
     if fill != 0:
-        date_record.update(filler(date_record, fill, policy))
-    res = []
-    ps = "~"
-    pc = "Unknown"
-    pch = pchn = 0.0
-    base = basec = scale = scalec = h = hc = 0.5
-    x = xc = 0
-    for day in pd.date_range(next(iter(date_record)), pd.to_datetime("today")):
-        t = day.strftime("%Y-%m-%d")
-        dr = date_record.get(t, DailyRecord(t))
-        if dr.chaos:
-            pch = dr.chaos
-            pchn = dr.chaosn
+        date_records.update(fill_gap_records(date_records, fill, policy))
+
+    results = []
+    prev_status = "~"
+    prev_content = "Unknown"
+    prev_chaos = prev_chaosn = 0.0
+    base_resilience = base_content = 0.5
+    scale_resilience = scale_content = 0.5
+    resilience_val = fixity_val = 0.5
+    step_resilience = step_fixity = 0
+
+    first_day = next(iter(date_records))
+    for day in pd.date_range(first_day, pd.to_datetime("today")):
+        day_str = day.strftime("%Y-%m-%d")
+        record = date_records.get(day_str, DailyRecord(day_str))
+
+        if record.chaos:
+            prev_chaos = record.chaos
+            prev_chaosn = record.chaosn
         else:
-            dr.chaos = pch
-            dr.chaosn = pchn
-        s = dr.specimen
-        p = sigparams.get(s)
-        if s != ps:
-            base = h
-            scale = base if p[2] < 0 else 1 - base
-            ps = s
-            x = 0
-        x += 1
-        h = base + scale * sigmoid(x, *p)
-        dr.resilience = h
-        c = dr.content
-        cp = sigparams.get(c)
-        if c != pc:
-            basec = hc
-            scalec = basec if cp[2] < 0 else 1 - basec
-            pc = c
-            xc = 0
-        xc += 1
-        hc = basec + scalec * sigmoid(xc, *cp)
-        dr.fixity = hc
-        res.append(dr)
-    resdf = pd.DataFrame(res)
-    resdf.columns = [c[1:] if c[0] == "_" else c.title() for c in resdf.columns]
-    resdf["URIM"] = resdf["Datetime"].apply(
-        lambda x: f"{WBM}/{x}/{url}" if x != "~" else "#"
+            record.chaos = prev_chaos
+            record.chaosn = prev_chaosn
+
+        specimen = record.specimen
+        status_params = sigparams.get(specimen, (5, 1.0, 1.0))
+        if specimen != prev_status:
+            base_resilience = resilience_val
+            scale_resilience = base_resilience if status_params[2] < 0 else 1 - base_resilience
+            prev_status = specimen
+            step_resilience = 0
+        step_resilience += 1
+        resilience_val = base_resilience + scale_resilience * sigmoid(step_resilience, *status_params)
+        record.resilience = resilience_val
+
+        content_status = record.content
+        content_params = sigparams.get(content_status, (5, 1.0, 1.0))
+        if content_status != prev_content:
+            base_content = fixity_val
+            scale_content = base_content if content_params[2] < 0 else 1 - base_content
+            prev_content = content_status
+            step_fixity = 0
+        step_fixity += 1
+        fixity_val = base_content + scale_content * sigmoid(step_fixity, *content_params)
+        record.fixity = fixity_val
+
+        results.append(record)
+
+    df_records = pd.DataFrame(results)
+    df_records.columns = [c[1:] if c.startswith("_") else c.title() for c in df_records.columns]
+    df_records["URIM"] = df_records["Datetime"].apply(
+        lambda x: f"{WAYBACK_BASE_URL}/{x}/{url}" if x != "~" else "#"
     )
-    trs = {
+
+    transitions = {
         "2xx": {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0},
         "3xx": {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0},
         "4xx": {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0},
         "5xx": {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0},
     }
-    rs = iter(res)
-    pr = next(rs)
-    for r in rs:
+
+    record_iter = iter(results)
+    prev_rec = next(record_iter)
+    for rec in record_iter:
         try:
-            trs[r.specimen][pr.specimen] += 1
-            pr = r
-        except KeyError as e:
+            transitions[rec.specimen][prev_rec.specimen] += 1
+            prev_rec = rec
+        except KeyError:
             continue
-    trsdf = (
-        pd.DataFrame(trs)
+
+    df_transitions = (
+        pd.DataFrame(transitions)
         .reset_index()
         .rename(columns={"index": "Source"})
         .melt(
@@ -261,16 +180,21 @@ def load_data(url, fill, policy, sigparams):
             value_name="Count",
         )
     )
-    pscdf = (
+
+    df_samples = (
         pd.DataFrame.from_dict(psc, orient="index", columns=["Samples"])
         .reset_index()
         .rename(columns={"index": "Period"})
     )
-    return (resdf, trsdf, pscdf)
+
+    return df_records, df_transitions, df_samples
 
 
-def analyze_trends(url: str) -> Dict[str, float]:
-    fill, policy = 0, "identical"
+def analyze_trends(url: str) -> Dict[str, Any]:
+    """
+    Computes resilience, fixity, and chaos trend metrics for a given website URL.
+    """
+    fill_limit, policy = 0, "identical"
     sigparams = {
         "2xx": (4, 1.0, 1.0),
         "3xx": (5, 10.0, -0.5),
@@ -282,56 +206,43 @@ def analyze_trends(url: str) -> Dict[str, float]:
         "Unknown": (10, 30.0, -0.5),
     }
 
-    d, _, _ = load_data(url, fill, policy, sigparams)
+    df, _, _ = load_trend_data(url, fill_limit, policy, sigparams)
 
-    # Chart for Resilience
-    st.sidebar.subheader("Resilience Over Time")
-    st.sidebar.line_chart(d.set_index("Day")["Resilience"])
+    # Render charts in Streamlit sidebar
+    try:
+        st.sidebar.subheader("Resilience Over Time")
+        st.sidebar.line_chart(df.set_index("Day")["Resilience"])
 
-    # Chart for Fixity
-    st.sidebar.subheader("Fixity Over Time")
-    st.sidebar.line_chart(d.set_index("Day")["Fixity"])
+        st.sidebar.subheader("Fixity Over Time")
+        st.sidebar.line_chart(df.set_index("Day")["Fixity"])
 
-    # Chart for Chaos
-    st.sidebar.subheader("Chaos Over Time")
-    chaos_df = d.set_index("Day")[["Chaos", "Chaosn"]]
-    chaos_df.columns = ["All", "Last 1000"]
-    st.sidebar.line_chart(chaos_df)
-
-    # st.sidebar.header("Trend Graphs")
-    # plot_metrics(d, "Chaos", "Chaos Trend Over Time")
-    # plot_metrics(d, "Fixity", "Fixity Trend Over Time")
+        st.sidebar.subheader("Chaos Over Time")
+        chaos_df = df.set_index("Day")[["Chaos", "Chaosn"]]
+        chaos_df.columns = ["All", "Last 1000"]
+        st.sidebar.line_chart(chaos_df)
+    except Exception:
+        pass
 
     return {
-        "captures": int(d["All"].sum()),
-        "span": len(d),
-        "gaps": int((d["All"] == 0).sum()),
-        "resilience": float(d["Resilience"].iloc[-1]),
+        "captures": int(df["All"].sum()),
+        "span": len(df),
+        "gaps": int((df["All"] == 0).sum()),
+        "resilience": float(df["Resilience"].iloc[-1]),
         "resilience_trend": (
-            float(d["Resilience"].iloc[-1] - d["Resilience"].iloc[-2])
-            if len(d) > 1
-            else 0
+            float(df["Resilience"].iloc[-1] - df["Resilience"].iloc[-2])
+            if len(df) > 1
+            else 0.0
         ),
-        "fixity": float(d["Fixity"].iloc[-1]),
+        "fixity": float(df["Fixity"].iloc[-1]),
         "fixity_trend": (
-            float(d["Fixity"].iloc[-1] - d["Fixity"].iloc[-2]) if len(d) > 1 else 0
+            float(df["Fixity"].iloc[-1] - df["Fixity"].iloc[-2]) if len(df) > 1 else 0.0
         ),
-        "chaos": float(d["Chaos"].iloc[-1]),
+        "chaos": float(df["Chaos"].iloc[-1]),
         "chaos_trend": (
-            float(d["Chaos"].iloc[-1] - d["Chaos"].iloc[-2]) if len(d) > 1 else 0
+            float(df["Chaos"].iloc[-1] - df["Chaos"].iloc[-2]) if len(df) > 1 else 0.0
         ),
-        "status_distribution": d[["2xx", "3xx", "4xx", "5xx"]].sum().to_dict(),
+        "status_distribution": df[["2xx", "3xx", "4xx", "5xx"]].sum().to_dict(),
     }
-
-
-# def plot_metrics(data: pd.DataFrame, metric: str, title: str):
-#     plt.figure(figsize=(10, 4))
-#     plt.plot(data["Datetime"], data[metric], marker="o")
-#     plt.title(title)
-#     plt.xlabel("Date")
-#     plt.ylabel(metric.capitalize())
-#     plt.grid(True)
-#     st.pyplot(plt)
 
 
 def interpret_trend(metric: str, value: float, trend: float) -> str:
@@ -363,11 +274,6 @@ def get_trend_analysis(url: str) -> str:
     logger.info(f"Analyzing trends for {url}")
     summary = analyze_trends(url)
 
-    # # Plotting the Chaos and Fixity graphs in the sidebar
-    # st.sidebar.header("Trend Graphs")
-    # plot_metrics(d, "Chaos", "Chaos Trend Over Time")
-    # plot_metrics(d, "Fixity", "Fixity Trend Over Time")
-
     return f"""
     Trend Analysis for {url}:
 
@@ -387,6 +293,6 @@ def get_trend_analysis(url: str) -> str:
     - 3xx: {summary['status_distribution']['3xx']}
     - 4xx: {summary['status_distribution']['4xx']}
     - 5xx: {summary['status_distribution']['5xx']}
-    
-    These metrics are for the understanding of LLM only. Try to simplify the explanation for the end-user. You'll have to explain in layman terms what these metrics me an for the website's health and stability. Don't include the technical terms like fixity, chaos in the trend analysis result as user might not know of these.
+
+    These metrics are for the understanding of LLM only. Try to simplify the explanation for the end-user. You'll have to explain in layman terms what these metrics mean for the website's health and stability. Don't include technical terms like fixity, chaos in the trend analysis result as user might not know of these.
     """
