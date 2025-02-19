@@ -19,7 +19,7 @@ def fetch_and_extract_text(url: str, timeout: int = 20) -> Optional[str]:
         response = requests.get(
             url,
             timeout=timeout,
-            headers={"User-Agent": "Mozilla/5.0 (Athena Wayback Assistant)"},
+            headers={"User-Agent": "Mozilla/5.0 (Wayback Copilot Bot)"},
         )
         response.raise_for_status()
 

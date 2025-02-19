@@ -2,7 +2,7 @@
 FROM python:3.10-slim
 
 # Set the working directory
-WORKDIR /wbm_ai_sum
+WORKDIR /app
 
 # Copy the requirements.txt file and install dependencies
 COPY requirements.txt requirements.txt

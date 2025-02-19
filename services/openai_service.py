@@ -17,7 +17,10 @@ class OpenAIService:
 
     def __init__(self, api_key: str):
         self.client = OpenAI(api_key=api_key)
-        self.system_prompt = os.getenv("SYSTEM_PROMPT", "You are Athena, a helpful AI assistant for the Wayback Machine.")
+        self.system_prompt = os.getenv(
+            "SYSTEM_PROMPT",
+            "You are Wayback Machine Copilot, a helpful AI assistant for exploring and analyzing web archives.",
+        )
 
     def get_completion(self, messages: List[Dict[str, Any]]):
         """
